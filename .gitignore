@@ -1,0 +1,7 @@
+mcore_*
+include/
+__pycache__/
+
+*.swp
+*.so
+*.out
