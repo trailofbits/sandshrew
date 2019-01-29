@@ -1,3 +1,3 @@
 # sandshrew
 
-Underconstrained concolic execution tool for cryptography verification
+Underconstrained concolic execution tool for cryptography verification.

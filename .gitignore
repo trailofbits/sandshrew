@@ -2,6 +2,8 @@ mcore_*
 include/
 __pycache__/
 
+tests/test_pack25519
+
 *.swp
 *.so
 *.out
