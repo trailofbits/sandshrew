@@ -1,7 +1,10 @@
+env/
+utils/
 mcore_*
 include/
 __pycache__/
 
+tests/_test.c
 tests/test_pack25519
 
 *.swp

@@ -4,12 +4,19 @@ CFLAGS		= -g -static -Wall
 LFLAGS 		= -g -shared -fPIC
 SRCS		= include/rng.c include/tweetnacl.c
 
+
 %: tests/%.c
 	$(CC) $(CFLAGS) $(IFLAGS) $(COMPILE) -o tests/$@ $< $(SRCS)
 	$(CC) $(LFLAGS) $(IFLAGS) $(COMPILE) -o tests/$@.so $< $(SRCS)
 
 prepare:
-	mkdir include
+	mkdir include/ utils/
+	git clone https://github.com/eliben/pycparser.git
+	mv pycparser/utils/fake_libc_include utils/fake_libc_include
+	rm -rf pycparser
+.PHONY: prepare
+
+crypto:
 	wget https://raw.githubusercontent.com/LoupVaillant/Monocypher/master/src/monocypher.c -O include/monocypher.c
 	wget https://raw.githubusercontent.com/LoupVaillant/Monocypher/master/src/monocypher.h -O include/monocypher.h
 	wget https://tweetnacl.cr.yp.to/20131229/tweetnacl.c -O include/tweetnacl.c
