@@ -20,6 +20,7 @@ sandshrew.py
 import argparse
 import glob
 import os.path
+import subprocess
 
 import cffi
 import pycparser
@@ -35,63 +36,128 @@ BUFFER_SIZE = 32
 HEADERS = glob.glob(
     os.path.join(os.path.abspath(os.path.dirname(__file__)), "include/*.h")
 )
+FUNC_FILE = "tests/_test.c"
 
 
 class FuncDefVisitor(c_ast.NodeVisitor):
-    """ object for traversing C AST nodes and
-    generating a function parse tree """
+    """
+    parent object that enables the traversal of
+    functions to generate a call graph by spawning
+    child visitors
+    """
 
-    def __init__(self, funcname):
-        self.funcname = funcname
+    def __init__(self, func_names):
+        """
+        :param func_names: list of target symbols
+        """
+        self.func_names = func_names
+        self.child = FuncCallVisitor()
+        super().__init__()
+
+
+    def visit_FuncDef(self, node): 
+        """
+        method called by visit() in base class that
+        spawns off child visitors for target functions
+
+        :param node: abstract syntax tree
+        """
+        
+        # TODO: some libraries might alias function name.
+        print(node.decl.name)
+
+        # each visitor appends to child.parse_tree
+        if node.decl.name in self.func_names:
+            self.child.visit(node)
+
+
+class FuncCallVisitor(c_ast.NodeVisitor):
+
+    def __init__(self):
         self.parse_tree = {}
 
-    def visit_FuncDef(self, node):
 
-        # retrieve function parameters
-        func_params = node.decl.type.args.params
-
-        # parse out functions appropriately
-        param_list = []
-        for params in func_params:
-
-            # check if type is pointer declaration
-            if type(params.type) == c_ast.PtrDecl:
-
-                # awkward attributes because of single indirection
-                ptype = params.type.type.type.names
-
-            # else parameter is variable
-            elif type(params.type.type) == c_ast.IdentifierType:
-                ptype = params.type.type.names
-
-            param_list.append(ptype)
-
-        # append to parse tree
-        self.parse_tree[node.decl.name] = param_list
+    # TODO: recursively traverse typedef node to generate
+    # type / struct with attributes
+    def _expand_typedef(self, node):
+        """ TODO """
+        decl_copy = copy.deepcopy(node)
+        return decl_copy
 
 
-def generate_parse_tree(filename, func):
-    """ 
-    helper method that generates a parse tree of 
+    def visit_FuncCall(self, node):
+        """
+        method called by visit() in base class that
+        enables us to traverse node to extract function
+        call parameters
+
+        :param node: abstract syntax tree
+        """
+
+        args = []
+
+        for param in node.decl.type.args.params:
+
+            # check if param is pointer type
+            if type(param.type) is c_ast.PtrDecl:
+
+                # pointer to pointer type - awkward attributes result of
+                # indirection
+                if type(param.type.type) is c_ast.PtrDecl:
+                    ptype = param.type.type.type.type.names
+                else:
+                    ptype = param.type.type.type.names
+
+            # TODO: check if function pointer; also traverse??
+
+            # check if type alias
+            elif type(param.type.type) is c_ast.TypeDecl:
+                ptype = param.type.type.type.names
+
+            # else, a regular non-pointer type
+            elif type(param.type.type) is c_ast.IdentifierType:
+                ptype = param.type.type.names
+
+            args += ptype
+
+        # append result to parse tree
+        self.parse_tree[node.decl.name] = args
+
+
+
+def generate_parse_tree(filename, funcs):
+    """
+    helper method that generates a parse tree of
     all functions within a target function
 
     :param filename: C file to generate AST
-    :param func: name of target function to generate AST
+    :param funcs: list of functions to extract call graph
     :rtype: dict
+
+    TODO: parse additional compiler flags
     """
-    ast = pycparser.parse_file(filename,
-                               use_cpp=True, cpp_path='gcc',
-                               cpp_args=['-Iinclude', r'-Iutils/fake_libc_include'])
-    v = FuncDefVisitor(func)
-    v.visit(ast) # TODO: correct this!
-    return v.parse_tree
+
+    # run a subprocess commmand to initialize a _test.c file with all function definitions from linked
+    # libraries. pycparser can only reason if headers are preprocessed correctly.
+    with open(FUNC_FILE, 'w+') as out:
+        subprocess.call(['gcc', '-nostdinc', '-E', '-Iinclude', '-Iutils/fake_libc_include', filename],
+                          stdout=out, stderr=subprocess.STDOUT)
+
+    # use pycparser to generate an AST from the generated intermediate C file
+    ast = pycparser.parse_file(FUNC_FILE)
+
+    # spawn off call graph visitor
+    parent = FuncDefVisitor(funcs)
+    parent.visit(ast)
+    print(parent.child.parse_tree)
+    return parent.child.parse_tree
 
 
 def call_ffi(lib, funcname, args):
-    """ 
+    """
     safe wrapper to calling C library
-    functions through cffi  
-    
+    functions through cffi
+
     :param lib: cffi.FFI object to interact with
     :param funcname: name of target function to concretize
     :param args: list of arguments passed to function
@@ -122,7 +188,7 @@ def main():
     args = parser.parse_args()
     if args is None:
         parser.print_help()
-
+        return 0
 
     # initialize FFI through shared object
     obj = args.binary + ".so"
@@ -134,14 +200,14 @@ def main():
     # initialize Manticore and context manager
     m = Manticore(args.binary, ['+' * BUFFER_SIZE])
     m.context['syms'] = args.symbols
-    m.context['funcs'] = generate_parse_tree(args.binary + ".c", m.context['syms'])
+    m.context['funcs'] = generate_parse_tree(args.binary + ".c", args.symbols)
     m.context['argv1'] = None
 
 
     # add record trace hook throughout execution if specified by user
     if args.trace:
         m.context['trace'] = []
-        
+
         @m.hook(None)
         def record(state):
             pc = state.cpu.PC
@@ -153,6 +219,8 @@ def main():
     # initialize state by constraining symbolic argv
     @m.init
     def init(initial_state):
+
+        print("Constraining symbolic argument")
 
         # determine argv[1] from state.input_symbols by label name
         argv1 = next(sym for sym in initial_state.input_symbols if sym.name == 'ARGV1')
@@ -201,34 +269,39 @@ def main():
                 # check if args are symbolic, and concretize if so
                 for reg in arg_regs:
                     if issymbolic(reg):
+                        print(f"{reg} is symbolic! Concretizing...")
                         raise abstractcpu.ConcretizeRegister(reg)
 
                 # create concrete arg list with correctly FFI-typed inputs
+                # TODO: correctly handle invalid/unknown types
                 arglist = []
                 for reg_num, ctype in enumerate(argtypes):
-                    concrete_arg = ffi.new(ctype, state.cpu.read_bytes(arg_regs[reg_num]))
+                    concrete_arg = ffi.new(ctype, state.cpu.read_bytes(arg_regs[reg_num], BUFFER_SIZE))
+                    print(concrete_arg)
                     arglist.push(concrete_arg)
 
                 # execute C function natively through FFI
                 call_ffi(lib, sym, argtypes)
 
+                # TODO: get return value, re-symbolicate
+
 
     # we finally attach a hook on the `abort` call, which must be called in the program
     # to abort from a fail/edge case path (i.e comparison b/w implementations failed), and
-    # solve for the argv symbolic buffer 
+    # solve for the argv symbolic buffer
     @m.hook(m.resolve('abort'))
     def fail_state(state):
-        """ the program must make a call to abort() in 
+        """ the program must make a call to abort() in
         the edge case path. This way we can hook onto it
         with Manticore and solve for the input """
 
         print("Entering edge case path")
-       
+
         # solve for the symbolic argv input
         with m.locked_context() as context:
             solution = state.solve_one(context['argv1'], BUFFER_SIZE)
             print("Edge case found: ", solution)
-        
+
         m.terminate()
 
 
@@ -240,6 +313,7 @@ def main():
     if args.trace:
         print(f"Total instructions: {len(m.context['trace'])}\nLast instruction: {hex(m.context['trace'][-1])}")
 
+    return 0
 
 if __name__ == "__main__":
     main()
