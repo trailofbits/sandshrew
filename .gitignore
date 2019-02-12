@@ -3,6 +3,7 @@ utils/
 mcore_*
 include/
 __pycache__/
+*.egg-info/
 
 tests/_test.c
 tests/test_pack25519

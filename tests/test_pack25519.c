@@ -6,7 +6,7 @@
  * 	TweeNaCL and Monocypher
  */
 
-#include <tweetnacl.h>
+#include <tweetnacl.c>
 #include <sodium.h>
 
 #include <stdlib.h>
@@ -15,10 +15,13 @@
 
 int main(int argc, char ** argv)
 {
+	if (sodium_init() < 0)
+		return -1;
+	
 	/* instantiate buffers for storing results */
 	uint8_t r1[32], r2[32];
 
-    /* tweetnacl: vulnerable scalar multiplication */
+    	/* tweetnacl: vulnerable scalar multiplication */
 	crypto_scalarmult_curve25519_tweet_base(r1, (const uint8_t *) argv[1]);
 
 	/* libsodium: correct scalar multiplication */
