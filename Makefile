@@ -1,13 +1,13 @@
-CC		= gcc
+CC			= gcc
 IFLAGS		= -Iinclude
-CFLAGS		= -g -static -Wall
+CFLAGS		= -g -Wall
 LFLAGS 		= -g -shared -fPIC
 SRCS		= include/rng.c include/tweetnacl.c
-
+LDFLAGS		= -lsodium
 
 %: tests/%.c
-	$(CC) $(CFLAGS) $(IFLAGS) $(COMPILE) -o tests/$@ $< $(SRCS)
-	$(CC) $(LFLAGS) $(IFLAGS) $(COMPILE) -o tests/$@.so $< $(SRCS)
+	$(CC) $(CFLAGS) $(IFLAGS) -o tests/$@ $< $(SRCS) $(LDFLAGS)
+	$(CC) $(LFLAGS) $(IFLAGS) -o tests/$@.so $< $(SRCS) $(LDFLAGS)
 
 prepare:
 	mkdir include/ utils/
