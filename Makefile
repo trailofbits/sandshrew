@@ -1,13 +1,12 @@
-CC		= gcc
-IFLAGS		= -L/usr/local/lib -Iinclude
-CFLAGS		= -z muldefs
+CC			= gcc
+IFLAGS		= -Iinclude
+CFLAGS		= -g -z muldefs
 LFLAGS 		= -shared -fPIC
 SRCS		= include/rng.c include/tweetnacl.c
-LDFLAGS		= -lsodium
 
 %: tests/%.c
-	$(CC) -g $(CFLAGS) $(IFLAGS) -o tests/$@ $< $(SRCS) $(LDFLAGS)
-	$(CC) -g $(CFLAGS) $(LFLAGS) $(IFLAGS) -o tests/$@.so $< $(SRCS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -static $(IFLAGS) -o tests/$@ $< $(SRCS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(LFLAGS) $(IFLAGS) -o tests/$@.so $< $(SRCS) $(LDFLAGS)
 
 prepare:
 	mkdir include/ utils/

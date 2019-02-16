@@ -60,7 +60,7 @@ def main():
     parser = argparse.ArgumentParser(prog="sandshrew")
     required = parser.add_argument_group("required arguments")
 
-    # test gen and analysis 
+    # test gen and analysis
     required.add_argument("-t", "--test", dest="test", required=True,
                         help="Target binary for sandshrew analysis")
     required.add_argument("-s", "--symbols", dest="symbols", required=True,
@@ -80,18 +80,22 @@ def main():
         return 0
 
 
+    # initialize Manticore and context manager
+    m = Manticore(args.test, ['+' * consts.BUFFER_SIZE])
+    m.context['syms'] = args.symbols
+    m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test + ".c", args.symbols)
+    m.context['argv1'] = None
+
     # initialize FFI through shared object
     obj_path = args.test + ".so"
     ffi = cffi.FFI()
     lib = ffi.dlopen(obj_path)
 
-
-    # initialize Manticore and context manager
-    m = Manticore(args.test, ['+' * consts.BUFFER_SIZE])
-    m.context['syms'] = args.symbols
-    m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test, args.symbols)
-    m.context['argv1'] = None
-
+    """
+    with open(m.workspace + "/" + consts.FUNC_FILE, 'rb') as cf:
+        defs = cf.read()
+        ffi.cdef(str(defs))
+    """
 
     # add record trace hook throughout execution if specified by user
     if args.trace:

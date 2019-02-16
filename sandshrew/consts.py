@@ -20,4 +20,4 @@ HEADERS = glob.glob(
 
 COMPILER = "clang"
 
-FUNC_FILE = "tests/_test.c"
+FUNC_FILE = "_test.c"
