@@ -22,6 +22,8 @@ import os.path
 
 import cffi
 
+from elftools.elf.elffile import ELFFile
+
 from manticore import issymbolic
 from manticore.core.smtlib import operators
 from manticore.native import Manticore
@@ -48,12 +50,21 @@ def binary_arch(binary):
     """
     helper method for determining binary architecture
 
-    TODO
-
     :param binary: str to binary to introspect.
     :rtype bool: True for x86_64, False otherwise
     """
-    return True
+
+    # initialize pyelftools
+    with open(binary, 'rb') as f:
+        elffile = ELFFile(f)
+
+    # returns true for x86_64
+    if elffile['e_machine'] == 'EM_X86_64':
+        return True
+    elif elffile['e_machine'] == 'EM_X86':
+        return False
+    else:
+        return RuntimeError("unsupported target architecture for binary")
 
 
 def main():
@@ -65,9 +76,13 @@ def main():
                         help="Target binary for sandshrew analysis")
     required.add_argument("-s", "--symbols", dest="symbols", required=True,
                         nargs='+', help="Target function symbol(s) for equivalence analysis")
+    parser.add_argument("-c", "--compflags", dest="ex_opts", required=False,
+                        nargs='+', help="Extra compilation flags for dynamic parse tree generation")
 
     # debugging options
-    parser.add_argument("-d", "--trace", action='store_true', required=False,
+    parser.add_argument("-l", "--lazy", dest='lazy', action='store_true', required=False,
+                        help="Do a lazy run without concolic execution")
+    parser.add_argument("-d", "--trace", dest='trace', action='store_true', required=False,
                         help="Set to execute instruction recording")
     parser.add_argument("-v", "--verbosity", dest="verbosity", required=False,
                         default=2, help="Set verbosity for Manticore (default is 2)")
@@ -83,30 +98,31 @@ def main():
     # initialize Manticore and context manager
     m = Manticore(args.test, ['+' * consts.BUFFER_SIZE])
     m.context['syms'] = args.symbols
-    m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test + ".c", args.symbols)
     m.context['argv1'] = None
+    m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test + ".c", args.symbols)
+
+    print(f"Generated parse tree: {m.context['funcs']}")
 
     # initialize FFI through shared object
     obj_path = args.test + ".so"
     ffi = cffi.FFI()
+
+    # read definitions from
+    defs = parse.generate_func_prototypes(m.context['funcs'])
+
+    # initialize ffi interaction object
     lib = ffi.dlopen(obj_path)
 
-    """
-    with open(m.workspace + "/" + consts.FUNC_FILE, 'rb') as cf:
-        defs = cf.read()
-        ffi.cdef(str(defs))
-    """
+    # add record trace hook throughout execution
+    m.context['trace'] = []
 
-    # add record trace hook throughout execution if specified by user
-    if args.trace:
-        m.context['trace'] = []
-
-        @m.hook(None)
-        def record(state):
-            pc = state.cpu.PC
+    @m.hook(None)
+    def record(state):
+        pc = state.cpu.PC
+        if args.trace:
             print(f"{hex(pc)}")
-            with m.locked_context() as context:
-                context['trace'] += [pc]
+        with m.locked_context() as context:
+            context['trace'] += [pc]
 
 
     # initialize state by constraining symbolic argv
@@ -133,11 +149,8 @@ def main():
     # and tracks our symbolic inputs
     for n, sym in enumerate(m.context['syms']):
 
-        # NOTE: if pycparser is unreliable, use this checker hook in order to
-        # do a concrete run and gen parse tree instead during its run (??)
         @m.hook(m.resolve(sym))
         def checker(state):
-            """ TODO """
             with m.locked_context('syms', list) as syms:
                 print(f"Entering target function {syms[n]}")
 
@@ -145,7 +158,7 @@ def main():
     # for each helper function within those target symbols,
     # add concrete_hook, which enables them to be executed concretely
     # w/out the SE engine
-    for n, (sym, argtypes) in enumerate(m.context['funcs'].items()):
+    for n, (sym, val) in enumerate(m.context['funcs'].items()):
 
         @m.hook(m.resolve(sym))
         def concrete_hook(state):
@@ -158,8 +171,10 @@ def main():
 
                 # args_regs list seperate based on x86/x86_64
                 if binary_arch(args.test):
+                    print("Using x86_64 calling conventions")
                     arg_regs = [cpu.RDI, cpu.RSI, cpu.RDX]
                 else:
+                    print("Using x86 calling conventions")
                     args_regs = [cpu.EDI, cpu.ESI, cpu.EDX]
 
                 # check if args are symbolic, and concretize if so
@@ -169,15 +184,15 @@ def main():
                         raise abstractcpu.ConcretizeRegister(reg)
 
                 # create concrete arg list with correctly FFI-typed inputs
-                # TODO: correctly handle invalid/unknown types
                 arglist = []
-                for reg_num, ctype in enumerate(argtypes):
+                for reg_num, ctype in enumerate(val['args']):
+                    # TODO: check ctype and create type with correct size
+                    print(ctype)
                     concrete_arg = ffi.new(ctype, state.cpu.read_bytes(arg_regs[reg_num], consts.BUFFER_SIZE))
-                    print(concrete_arg)
                     arglist.push(concrete_arg)
 
                 # execute C function natively through FFI
-                call_ffi(lib, sym, argtypes)
+                call_ffi(lib, sym, arglist)
 
                 # TODO: get return value, re-symbolicate
 
