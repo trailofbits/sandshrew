@@ -6,8 +6,10 @@ __pycache__/
 *.egg-info/
 
 tests/_test.c
+tests/test_simple
 tests/test_pack25519
 
 *.swp
 *.so
 *.out
+*.gdb_history

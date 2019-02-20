@@ -1,26 +1,32 @@
+######################################################
 CC			= gcc
-IFLAGS		= -Iinclude
-CFLAGS		= -g -z muldefs
-LFLAGS 		= -shared -fPIC
-SRCS		= include/rng.c include/tweetnacl.c
 
-%: tests/%.c
-	$(CC) $(CFLAGS) -static $(IFLAGS) -o tests/$@ $< $(SRCS) $(LDFLAGS)
-	$(CC) $(CFLAGS) $(LFLAGS) $(IFLAGS) -o tests/$@.so $< $(SRCS) $(LDFLAGS)
+IFLAGS			= -Iinclude
+CFLAGS			= -g -z muldefs
+LFLAGS 			= -shared -fPIC
+
+TWEETNACL_SRCS		= include/rng.c include/tweetnacl.c
+######################################################
+
+all: prepare test_simple test_pack25519
+
+
+test_simple: tests/test_simple.c
+	$(CC) $(CFLAGS) -static -o tests/$@ $< -lcrypto -lssl
+	$(CC) $(CFLAGS) $(LFLAGS) -o tests/$@.so $< -lcrypto -lssl
+
+
+test_pack25519: tests/test_pack25519.c
+	$(CC) $(CFLAGS) -static $(IFLAGS) -o tests/$@ $< $(TWEETNACL_SRCS)
+	$(CC) $(CFLAGS) $(LFLAGS) $(IFLAGS) -o tests/$@.so $< $(TWEETNACL_SRCS)
+
 
 prepare:
 	mkdir include/ utils/
 	git clone https://github.com/eliben/pycparser.git
 	mv pycparser/utils/fake_libc_include utils/fake_libc_include
 	rm -rf pycparser
-.PHONY: prepare
 
-crypto:
-	wget https://raw.githubusercontent.com/LoupVaillant/Monocypher/master/src/monocypher.c -O include/monocypher.c
-	wget https://raw.githubusercontent.com/LoupVaillant/Monocypher/master/src/monocypher.h -O include/monocypher.h
-	wget https://tweetnacl.cr.yp.to/20131229/tweetnacl.c -O include/tweetnacl.c
-	wget https://tweetnacl.cr.yp.to/20131229/tweetnacl.h -O include/tweetnacl.h
-	wget https://raw.githubusercontent.com/ultramancool/tweetnacl-usable/master/randombytes.c -O include/rng.c
 
 clean:
 	rm -rf include/ __pycache__/ mcore_*/
