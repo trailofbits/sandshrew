@@ -2,7 +2,8 @@
 CC			= gcc
 
 IFLAGS			= -Iinclude
-CFLAGS			= -g -z muldefs
+
+CFLAGS			= -g
 LFLAGS 			= -shared -fPIC
 
 TWEETNACL_SRCS		= include/rng.c include/tweetnacl.c
