@@ -26,7 +26,9 @@ from elftools.elf.elffile import ELFFile
 
 from manticore import issymbolic
 from manticore.core.smtlib import operators
+from manticore.utils import log
 from manticore.native import Manticore
+from manticore.native.models import strcmp
 from manticore.native.cpu import abstractcpu
 
 import sandshrew.parse as parse
@@ -43,8 +45,9 @@ def call_ffi(lib, funcname, args):
     :param args: list of arguments passed to function
     """
     func = lib.__getattr__(funcname)
-    func(*args)
-
+    print(func.__name__)
+    ret = func(*args)
+    
 
 def binary_arch(binary):
     """
@@ -64,7 +67,7 @@ def binary_arch(binary):
     elif elffile['e_machine'] == 'EM_X86':
         return False
     else:
-        return RuntimeError("unsupported target architecture for binary")
+        raise RuntimeError("unsupported target architecture for binary")
 
 
 def main():
@@ -76,16 +79,19 @@ def main():
                         help="Target binary for sandshrew analysis")
     required.add_argument("-s", "--symbols", dest="symbols", required=True,
                         nargs='+', help="Target function symbol(s) for equivalence analysis")
-    parser.add_argument("-c", "--compflags", dest="ex_opts", required=False,
-                        nargs='+', help="Extra compilation flags for dynamic parse tree generation")
+    parser.add_argument("-x", "--exopts", dest="exopts", required=False,
+                        default='-Iinclude', help="Extra compilation flags for dynamic parse tree generation")
+
+    # constraint configuration
+    parser.add_argument("-c", "--constraint", dest="constraint", required=False,
+                        default='ascii', help="Constraint to apply to symbolic input. \
+                        Includes ascii (default), alpha, num, or alphanum")
 
     # debugging options
-    parser.add_argument("-l", "--lazy", dest='lazy', action='store_true', required=False,
-                        help="Do a lazy run without concolic execution")
     parser.add_argument("-d", "--trace", dest='trace', action='store_true', required=False,
                         help="Set to execute instruction recording")
     parser.add_argument("-v", "--verbosity", dest="verbosity", required=False,
-                        default=2, help="Set verbosity for Manticore (default is 2)")
+                        default=2, help="Set verbosity for sandshrew and Manticore (default is 2)")
 
 
     # parse or print help
@@ -94,12 +100,14 @@ def main():
         parser.print_help()
         return 0
 
-
-    # initialize Manticore and context manager
+    # initialize Manticore 
     m = Manticore(args.test, ['+' * consts.BUFFER_SIZE])
+    m.verbosity(int(args.verbosity))
+   
+    # initialize mcore context manager
     m.context['syms'] = args.symbols
     m.context['argv1'] = None
-    m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test + ".c", args.symbols)
+    m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test + ".c", args.symbols, args.exopts)
 
     print(f"Generated parse tree: {m.context['funcs']}")
 
@@ -116,6 +124,39 @@ def main():
     # add record trace hook throughout execution
     m.context['trace'] = []
 
+    # initialize state by constraining symbolic argv
+    @m.init
+    def init(initial_state):
+
+        print(f"Creating symbolic argument using '{args.constraint}' constraint")
+
+        # determine argv[1] from state.input_symbols by label name
+        argv1 = next(sym for sym in initial_state.input_symbols if sym.name == 'ARGV1')
+        if argv1 is None:
+            raise RuntimeException("ARGV was not provided and/or made symbolic")
+
+        for i in range(consts.BUFFER_SIZE):
+
+            # apply constraint set based on user input
+            if args.constraint == "alpha":
+                raise NotImplementedError("alpha constraint not implemented")
+
+            elif args.constraint == "num":
+                initial_state.constrain(operators.AND(ord('0') <= argv1[i], argv1[i] <= ord('9')))
+
+            elif args.constraint == "alphanum":
+                raise NotImplementedError("alpha constraint not implemented")
+
+            # default case: ascii
+            else:
+                initial_state.constrain(operators.AND(ord(' ') <= argv1[i], argv1[i] <= ord('}')))
+
+        # store argv1 in global state
+        with m.locked_context() as context:
+            context['argv1'] = argv1
+
+
+    # store a trace counter, and output if arg was set
     @m.hook(None)
     def record(state):
         pc = state.cpu.PC
@@ -125,32 +166,15 @@ def main():
             context['trace'] += [pc]
 
 
-    # initialize state by constraining symbolic argv
-    @m.init
-    def init(initial_state):
-
-        print("Constraining symbolic argument")
-
-        # determine argv[1] from state.input_symbols by label name
-        argv1 = next(sym for sym in initial_state.input_symbols if sym.name == 'ARGV1')
-        if argv1 is None:
-            raise RuntimeException("ARGV was not provided and/or made symbolic")
-
-        # apply constraint for only ASCII characters
-        for i in range(consts.BUFFER_SIZE):
-            initial_state.constrain(operators.AND(ord(' ') <= argv1[i], argv1[i] <= ord('}')))
-
-            # store argv1 in global state
-            with m.locked_context() as context:
-                context['argv1'] = argv1
-
-
     # at target symbols, attach checker hooks that error-checks
     # and tracks our symbolic inputs
     for n, sym in enumerate(m.context['syms']):
 
         @m.hook(m.resolve(sym))
         def checker(state):
+            """
+            TODO:
+            """
             with m.locked_context('syms', list) as syms:
                 print(f"Entering target function {syms[n]}")
 
@@ -165,36 +189,69 @@ def main():
             """ concrete hook for non-symbolic execution through FFI """
             cpu = state.cpu
 
+            # args_regs list seperate based on x86/x86_64
+            if binary_arch(args.test):
+                arg_regs = [('RDI', cpu.RDI), ('RSI', cpu.RSI), ('RDX', cpu.RDX)]
+            else:
+                args_regs = [('EDI', cpu.EDI), ('ESI', cpu.ESI), ('EDX', cpu.EDX)]
+
+            # check if args are symbolic, and concretize if so
+            for reg in arg_regs:
+                if issymbolic(reg[1]):
+                    print(f"{reg[0]} is symbolic! Concretizing...")
+                    raise abstractcpu.ConcretizeRegister(cpu, reg[0])
+
+            print(f"Concretely executing function {sym}")
+            
             with m.locked_context() as context:
-
-                print(f"Concretely executing function {sym}")
-
-                # args_regs list seperate based on x86/x86_64
-                if binary_arch(args.test):
-                    print("Using x86_64 calling conventions")
-                    arg_regs = [cpu.RDI, cpu.RSI, cpu.RDX]
-                else:
-                    print("Using x86 calling conventions")
-                    args_regs = [cpu.EDI, cpu.ESI, cpu.EDX]
-
-                # check if args are symbolic, and concretize if so
-                for reg in arg_regs:
-                    if issymbolic(reg):
-                        print(f"{reg} is symbolic! Concretizing...")
-                        raise abstractcpu.ConcretizeRegister(reg)
-
+    
+                # next_pc represents the instruction after
+                # `call sym`. we backtrack to the `call` instruction
+                # through our trace counter
+                next_pc = context['trace'][-1] + 5
+                
                 # create concrete arg list with correctly FFI-typed inputs
                 arglist = []
                 for reg_num, ctype in enumerate(val['args']):
-                    # TODO: check ctype and create type with correct size
+
+                    reg = arg_regs[reg_num - 1][1]
+
                     print(ctype)
-                    concrete_arg = ffi.new(ctype, state.cpu.read_bytes(arg_regs[reg_num], consts.BUFFER_SIZE))
-                    arglist.push(concrete_arg)
+                    if "char" in ctype:
+                        arg = ffi.new(ctype, b" ".join(cpu.read_bytes(reg, consts.BUFFER_SIZE)))
+                    else:
+                        arg = ffi.new(ctype, cpu.read_int(reg, size=consts.BUFFER_SIZE))
+
+                    arglist += [arg]
+
+
+                print(f"Generated concrete argument list: {arglist}")
 
                 # execute C function natively through FFI
                 call_ffi(lib, sym, arglist)
 
-                # TODO: get return value, re-symbolicate
+                # TODO: get return value after call, store in eax,
+                # and then symbolicate
+
+                # jmp to next instruction in target symbol
+                print(f"Jumping to instruction {next_pc}")
+                state.cpu.PC = next_pc
+
+                # TODO: concretize entirety of wrapper call.
+                #print(f"No symbolic input present - continue symbolic execution")
+
+
+    # crypto comparisons should be done in strcmp. Since we are writing only test cases, we don't
+    # need to rely on "constant-time comparison" implementations that may only lead to slower
+    # SE runtimes.
+    '''
+    @m.hook(m.resolve('strcmp'))
+    def strcmp_model(state):
+        """ when encountering strcmp(),
+        just execute the function model """
+        print("Invoking model for `strcmp()` call")
+        state.invoke_model(strcmp)
+    '''
 
 
     # we finally attach a hook on the `abort` call, which must be called in the program
@@ -217,7 +274,6 @@ def main():
 
 
     # run manticore
-    m.verbosity(args.verbosity)
     m.run()
 
     # output if arg is set
@@ -225,6 +281,7 @@ def main():
         print(f"Total instructions: {len(m.context['trace'])}\nLast instruction: {hex(m.context['trace'][-1])}")
 
     return 0
+
 
 if __name__ == "__main__":
     main()

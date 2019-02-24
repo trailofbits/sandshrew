@@ -12,7 +12,7 @@
 
 char * benchmark_input = "s0me_1nput_123";
 
-
+/* for the sake of better parsing, we redefine MD5 */
 unsigned char *MD5(const unsigned char *d, size_t n, unsigned char *md)
 {
     MD5_CTX c;
@@ -23,7 +23,7 @@ unsigned char *MD5(const unsigned char *d, size_t n, unsigned char *md)
     if (!MD5_Init(&c))
         return NULL;
     
-	MD5_Update(&c, d, n);
+    MD5_Update(&c, d, n);
     MD5_Final(md, &c);
     //OPENSSL_cleanse(&c, sizeof(c)); 
     return md;

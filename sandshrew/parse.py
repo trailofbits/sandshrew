@@ -59,24 +59,33 @@ class FuncDefVisitor(c_ast.NodeVisitor):
                 # indirection
                 if type(param.type.type) is c_ast.PtrDecl:
                     ptype = param.type.type.type.type.names
-                    ptype += [" **"]
+                    ptype += ["*"]
 
                 # just one pointer lexicon
                 else:
                     ptype = param.type.type.type.names
-                    ptype += [" *"]
 
-            # TODO: check if function pointer; also traverse??
 
             # check if type alias
             elif type(param.type.type) is c_ast.TypeDecl:
                 ptype = param.type.type.type.names
 
+
             # else, a regular non-pointer type
             else:
                 ptype = param.type.type.names
 
+            # do another type-check, since we want `char` parameters
+            # to contain `[]` so we can read bytes into it.
+            if 'char' in ptype:
+                ptype += ["[]"]
+            else:
+                ptype += ["*"]
+
+
+            # collect all argument type and names into str
             args += [" ".join(ptype)]
+
 
         # retrieve return type of function.
         try:
@@ -127,7 +136,7 @@ class FuncCallVisitor(c_ast.NodeVisitor):
         self.func_calls.append(node.name.name)
 
 
-def generate_parse_tree(workspace, filename, funcs, ex_opts="-Iinclude"):
+def generate_parse_tree(workspace, filename, funcs, ex_opts):
     """
     helper method that generates a parse tree of
     all functions within a target function
