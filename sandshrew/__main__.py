@@ -47,7 +47,8 @@ def call_ffi(lib, funcname, args):
     func = lib.__getattr__(funcname)
     print(func.__name__)
     ret = func(*args)
-    
+    return ret
+
 
 def binary_arch(binary):
     """
@@ -100,14 +101,15 @@ def main():
         parser.print_help()
         return 0
 
-    # initialize Manticore 
+    # initialize Manticore
     m = Manticore(args.test, ['+' * consts.BUFFER_SIZE])
     m.verbosity(int(args.verbosity))
-   
+
     # initialize mcore context manager
     m.context['syms'] = args.symbols
     m.context['argv1'] = None
     m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test + ".c", args.symbols, args.exopts)
+    m.context['exec_flag'] = False
 
     print(f"Generated parse tree: {m.context['funcs']}")
 
@@ -189,58 +191,69 @@ def main():
             """ concrete hook for non-symbolic execution through FFI """
             cpu = state.cpu
 
-            # args_regs list seperate based on x86/x86_64
+            # args_regs list seperate based on x86/x86_64 target arch for binary.
             if binary_arch(args.test):
                 arg_regs = [('RDI', cpu.RDI), ('RSI', cpu.RSI), ('RDX', cpu.RDX)]
             else:
-                args_regs = [('EDI', cpu.EDI), ('ESI', cpu.ESI), ('EDX', cpu.EDX)]
+                arg_regs = [('EDI', cpu.EDI), ('ESI', cpu.ESI), ('EDX', cpu.EDX)]
 
-            # check if args are symbolic, and concretize if so
-            for reg in arg_regs:
-                if issymbolic(reg[1]):
-                    print(f"{reg[0]} is symbolic! Concretizing...")
-                    raise abstractcpu.ConcretizeRegister(cpu, reg[0])
 
-            print(f"Concretely executing function {sym}")
-            
             with m.locked_context() as context:
-    
-                # next_pc represents the instruction after
-                # `call sym`. we backtrack to the `call` instruction
-                # through our trace counter
-                next_pc = context['trace'][-1] + 5
-                
-                # create concrete arg list with correctly FFI-typed inputs
-                arglist = []
-                for reg_num, ctype in enumerate(val['args']):
 
-                    reg = arg_regs[reg_num - 1][1]
-
-                    print(ctype)
-                    if "char" in ctype:
-                        arg = ffi.new(ctype, b" ".join(cpu.read_bytes(reg, consts.BUFFER_SIZE)))
-                    else:
-                        arg = ffi.new(ctype, cpu.read_int(reg, size=consts.BUFFER_SIZE))
-
-                    arglist += [arg]
+                # check if arguments are symbolic in function.
+                # set `exec_flag` before raising exception.
+                for (arg, reg) in arg_regs:
+                    if issymbolic(reg):
+                        context['exec_flag'] = True
+                        print(f"Concretizing {arg} register")
+                        raise abstractcpu.ConcretizeRegister(cpu, arg)
 
 
-                print(f"Generated concrete argument list: {arglist}")
+                # flag was set, time to concolically execute!
+                # we undergo the trouble of calling ffi such that our SE
+                # engine can still collect path constraints with a speedup
+                if context['exec_flag'] == True:
 
-                # execute C function natively through FFI
-                call_ffi(lib, sym, arglist)
+                    print(f"Concolically executing function {sym}")
 
-                # TODO: get return value after call, store in eax,
-                # and then symbolicate
+                    # next_pc represents the instruction after `call sym`.
+                    # we backtrack to this `call` instruction through our trace counter
+                    next_pc = context['trace'][-1] + 5
 
-                # jmp to next instruction in target symbol
-                print(f"Jumping to instruction {next_pc}")
-                state.cpu.PC = next_pc
+                    # create concrete arg list with correctly FFI-typed inputs
+                    arglist = []
+                    for reg_num, ctype in enumerate(val['args']):
 
-                # TODO: concretize entirety of wrapper call.
-                #print(f"No symbolic input present - continue symbolic execution")
+                        reg = arg_regs[reg_num - 1][1]
+
+                        if "char" in ctype:
+                            arg = ffi.new(ctype, b" ".join(cpu.read_bytes(reg, consts.BUFFER_SIZE)))
+                        else:
+                            arg = ffi.new(ctype, cpu.read_int(reg, size=consts.BUFFER_SIZE))
+
+                        arglist += [arg]
 
 
+                    print(f"Generated concrete argument list: {arglist}")
+
+                    # execute C function natively through FFI
+                    ret = call_ffi(lib, sym, arglist)
+
+                    # write return value into RAX register, and call next instruction
+                    cpu.write_register('RAX', ret)
+
+                    # jump to next instruction in target symbol
+                    print(f"Jumping to instruction {next_pc}")
+                    state.cpu.PC = next_pc
+
+
+                # if flag is not set, we do not concolically execute. No symbolic input is
+                # present, so as a result, there is no need to collect path constraints.
+                else:
+                    print("No symbolic input present, so skipping concolic testing.")
+
+
+    # FIXME(alan): strcmp hooks incorrectly, some implementations such __strcmp_avx2 optimization
     # crypto comparisons should be done in strcmp. Since we are writing only test cases, we don't
     # need to rely on "constant-time comparison" implementations that may only lead to slower
     # SE runtimes.
