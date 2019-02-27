@@ -24,11 +24,11 @@ class FuncDefVisitor(c_ast.NodeVisitor):
     generate call graphs.
     """
 
-    def __init__(self, func_names):
+    def __init__(self, func):
         """
-        :param func_names: list of target symbols
+        :param func: target symbol name
         """
-        self.func_names = func_names
+        self.func = func
         self.parse_tree = {}
         self.initial_callgraph = None
         super().__init__()
@@ -43,10 +43,14 @@ class FuncDefVisitor(c_ast.NodeVisitor):
         """
 
         # generate a callgraph for the target functions
-        if node.decl.name in self.func_names:
+        if node.decl.name == self.func:
             child = FuncCallVisitor()
             child.visit(node)
             self.initial_callgraph = child.func_calls
+
+        # ignore for special cases like entry points
+        if node.decl.name == "main":
+            return
 
         # retrieve and parse parameters of all functions present
         args = []
@@ -136,14 +140,14 @@ class FuncCallVisitor(c_ast.NodeVisitor):
         self.func_calls.append(node.name.name)
 
 
-def generate_parse_tree(workspace, filename, funcs, ex_opts):
+def generate_parse_tree(workspace, filename, func, ex_opts):
     """
     helper method that generates a parse tree of
     all functions within a target function
 
     :param workspace: Manticore workspace dir str
     :param filename: C file to generate AST
-    :param funcs: list of functions to extract call graph
+    :param func: function to extract call graph
     :param ex_opts: other user-supplied compilation flags.
     :rtype: dict
     """
@@ -170,7 +174,7 @@ def generate_parse_tree(workspace, filename, funcs, ex_opts):
     ast = pycparser.parse_file(pre_path, use_cpp=True, cpp_args='-fpreprocessed')
 
     # spawn off call graph visitor
-    parent = FuncDefVisitor(funcs)
+    parent = FuncDefVisitor(func)
     parent.visit(ast)
     return parent.callgraph
 
