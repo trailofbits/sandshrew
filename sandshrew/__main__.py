@@ -4,52 +4,23 @@ sandshrew.py
 
     Unconstrained concolic execution tool for cryptographic verification
 
-    METHODOLOGY:
-    ============
-    1. Generate parse tree of helper functions
-    called by target function.
-    Contain: funcname, argtypes, rtype
-
-    2. During SE run, symbolicate func arguments
-    for target function.
-
-    3. Attach hooks to helper functions for concrete
-    execution through FFI
-
 """
 import argparse
 import os.path
 import logging
 
-import cffi
-
 from elftools.elf.elffile import ELFFile
 
 from manticore import issymbolic
-from manticore.core.state import Concretize
 from manticore.core.smtlib import operators
-from manticore.utils import log
+from manticore.core.plugin import Plugin
 from manticore.native import Manticore
 from manticore.native.models import strcmp
 from manticore.native.cpu import abstractcpu
+from manticore.utils.fallback_emulator import UnicornEmulator
 
 import sandshrew.parse as parse
 import sandshrew.consts as consts
-
-
-def call_ffi(lib, funcname, args):
-    """
-    safe wrapper to calling C library
-    functions through cffi
-
-    :param lib: cffi.FFI object to interact with
-    :param funcname: name of target function to concretize
-    :param args: list of arguments passed to function
-    """
-    func = lib.__getattr__(funcname)
-    print(func.__name__)
-    ret = func(*args)
-    return ret
 
 
 def binary_arch(binary):
@@ -67,10 +38,8 @@ def binary_arch(binary):
     # returns true for x86_64
     if elffile['e_machine'] == 'EM_X86_64':
         return True
-    elif elffile['e_machine'] == 'EM_X86':
-        return False
     else:
-        raise RuntimeError("unsupported target architecture for binary")
+        return False
 
 
 def main():
@@ -107,6 +76,9 @@ def main():
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
+    # check binary arch support for x86_64
+    if not binary_arch(args.test):
+        raise NotImplementedError("only supports x86_64 binary concretization")
 
     # initialize Manticore
     m = Manticore.linux(args.test, ['+' * consts.BUFFER_SIZE])
@@ -118,20 +90,11 @@ def main():
     m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test + ".c", args.symbol, args.exopts)
     m.context['exec_flag'] = False
 
-    logging.debug(f"Generated parse tree: {m.context['funcs']}")
-
-    # initialize FFI through shared object
-    obj_path = args.test + ".so"
-    ffi = cffi.FFI()
-
-    # read definitions from
-    defs = parse.generate_func_prototypes(m.context['funcs'])
-
-    # initialize ffi interaction object
-    lib = ffi.dlopen(obj_path)
+    logging.debug(f"Generated callgraph for {m.context['sym']}: {m.context['funcs']}")
 
     # add record trace hook throughout execution
     m.context['trace'] = []
+
 
     # initialize state by constraining symbolic argv
     @m.init
@@ -176,105 +139,67 @@ def main():
             context['trace'] += [pc]
 
 
-    # at target symbol, attach a hook that achieves the following:
-    #   - determine and concretize symbolic registers from naming convention
-    #   - gather path constraints
+    # at target symbol, attach a hook that determines whether
+    # Unicorn concretization is necessary
     @m.hook(m.resolve(m.context['sym']))
-    def checker(state):
+    def concrete_checker(state):
         """ checker hook that concretizes symbolic input """
         cpu = state.cpu
 
         with m.locked_context() as context:
             logging.debug(f"Entering target function {context['sym']}")
 
-            # args_regs list seperate based on x86/x86_64 target arch for binary.
-            if binary_arch(args.test):
-                context['arg_regs'] = [('RDI', cpu.RDI), ('RSI', cpu.RSI), ('RDX', cpu.RDX)]
-            else:
-                context['arg_regs'] = [('EDI', cpu.EDI), ('ESI', cpu.ESI), ('EDX', cpu.EDX)]
-
-            logging.debug(f"Arguments: {context['arg_regs']}")
-
-            # check if arguments are symbolic in function.
-            # set `exec_flag` before raising exception.
-            for (arg, reg) in context['arg_regs']:
-                try:
-                    data = cpu.read_register(arg)
-                    if issymbolic(data):
-                        context['exec_flag'] = True
-                        raise abstractcpu.ConcretizeRegister(cpu, arg)
-
-                # handle ConcretizeRegister by writing value to reg
-                except abstractcpu.ConcretizeRegister as e:
-                    expression = cpu.read_register(e.reg_name)
-
-                    def setstate(state, value):
-                        state.cpu.write_register(setstate.e.reg_name, value)
-                    setstate.e = e
-
-                    logging.debug(f"Concretizing {arg} register")
-                    raise Concretize(str(e), expression=expression,
-                                     setstate=setstate, policy=e.policy)
+            # check if RDI, the input arg, is symbolic, and
+            # if so, set `exec_flag` before raising exception.
+            data = cpu.read_int(cpu.RDI)
+            if issymbolic(data):
+                logging.debug("Concretizing input arg RDI")
+                context['exec_flag'] = True
 
 
-    # for each helper function within those target symbols,
-    # add concrete_hook, which enables them to be executed concretely
-    # w/out the SE engine
-    for n, (sym, val) in enumerate(m.context['funcs'].items()):
+    # for each helper function within those target symbols, add concrete_hook
+    # which enables them to be executed concretely w/out the SE engine
+    for sym in m.context['funcs']:
 
-        # add offset in order to hook onto after functon prologue
-        @m.hook(m.resolve(sym) + 4)
-        def concrete_hook(state):
-            """ concrete hook for non-symbolic execution through FFI """
+        @m.hook(m.resolve(sym))
+        def concolic_hook(state):
+            """ concretization hook """
             cpu = state.cpu
 
             with m.locked_context() as context:
 
-                # flag was set, time to concolically execute!
-                # we undergo the trouble of calling ffi such that our SE
-                # engine can still collect path constraints with a speedup
                 if context['exec_flag'] == True:
 
-                    logging.debug(f"Concolically executing function {sym}")
-
-                    # next_pc represents the instruction after `call sym`.
-                    # we backtrack to this `call` instruction through our trace counter
+                    # store `call sym` instruction and the one after that
+                    # by backtracking over trace counter
+                    call_pc = context['trace'][-1]
                     next_pc = context['trace'][-1] + 5
 
-                    # create concrete arg list with correctly FFI-typed inputs
-                    logging.debug("Enumerating parsed args and creating FFI-compatible types")
-                    arglist = []
-                    for reg_num, ctype in enumerate(val['args']):
+                    # we are currently in the function prologue of `sym`.
+                    # let's go back to `call sym`.
+                    state.cpu.PC = call_pc
 
-                        reg = context['arg_regs'][reg_num][1]
-                        if "char" in ctype:
-                            arg = ffi.new(ctype, b" ".join(cpu.read_bytes(reg, consts.BUFFER_SIZE)))
-                        else:
-                            arg = ffi.new(ctype, cpu.read_int(reg))
+                    # use the fallback emulator to concretely execute call
+                    # instruction.
+                    logging.debug(f"Concolically executing function {sym}")
+                    cpu.decode_instruction(cpu.PC)
+                    emu = UnicornEmulator(cpu)
+                    emu.emulate(cpu.instruction)
 
-                        # append ffi arg to list
-                        arglist += [arg]
+                    # create new fresh unconstrained symbolic value
+                    logging.debug("Writing fresh unconstrained buffer to RAX")
+                    return_buf = state.new_symbolic_buffer(consts.BUFFER_SIZE)
+                    state.cpu.write_bytes(state.cpu.RAX, return_buf)
 
-
-                    logging.debug(f"FFI arglist: {arglist}")
-
-                    # execute C function natively through FFI
-                    logging.debug(f"Executing FFI call for {sym}")
-                    ret = call_ffi(lib, sym, arglist)
-
-                    # write return value into RAX register, and call next instruction
-                    logging.debug("Writing return value to rax")
-                    cpu.write_register('RAX', ret)
-
-                    # jump to next instruction in target symbol
-                    logging.debug(f"Jumping to instruction {next_pc}")
+                    # jump to instruction after `call` (just to make sure)
                     state.cpu.PC = next_pc
 
-
+                
                 # if flag is not set, we do not concolically execute. No symbolic input is
                 # present, so as a result, there is no need to collect path constraints.
                 else:
                     logging.debug("No symbolic input present, so skipping concolic testing.")
+
 
 
     # FIXME(alan): strcmp hooks incorrectly, some implementations such __strcmp_avx2 optimization
@@ -303,8 +228,7 @@ def main():
 
         # solve for the symbolic argv input
         with m.locked_context() as context:
-            solution = state.solve_one(context['argv1'], consts.BUFFER_SIZE)
-            print("Edge case found: ", solution)
+            context['solution'] = state.solve_one(context['argv1'], consts.BUFFER_SIZE)
 
         m.terminate()
 
@@ -312,7 +236,10 @@ def main():
     # run manticore
     m.run()
 
+    # output results
     print(f"Total instructions: {len(m.context['trace'])}\nLast instruction: {hex(m.context['trace'][-1])}")
+    if m.context['solution'] is not None:
+        print(f"\nEDGE CASE FOUND: {m.context['solution']}")
     return 0
 
 
