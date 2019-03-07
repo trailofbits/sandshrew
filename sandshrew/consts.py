@@ -19,7 +19,7 @@ import os.path
 # size of input/register buffers for symbolic executor to recognize
 # when creating symbolic buffers. Default is 32, as most modern
 # crytographic primitives work with 32 bytes
-BUFFER_SIZE = 16
+BUFFER_SIZE = 32
 
 # compiler to use for generating preprocessed output. gcc is default,
 # as it supports generating preprocessor code through -E
@@ -33,6 +33,7 @@ FUNC_FILE = "_test.c"
 # DEVELOPER
 #################
 
+PREPEND_SYM = "SANDSHREW_"
 
 # we provide a list of common C types to check against before
 # FFI execution. This ensures that crypto lib type aliases gain

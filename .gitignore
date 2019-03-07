@@ -6,7 +6,7 @@ __pycache__/
 *.egg-info/
 
 tests/_test.c
-tests/test_simple
+tests/test_openssl_md5
 tests/test_pack25519
 
 *.swp

@@ -9,10 +9,10 @@ LFLAGS 			= -shared -fPIC
 TWEETNACL_SRCS		= include/rng.c include/tweetnacl.c
 ######################################################
 
-all: prepare test_simple test_pack25519
+all: prepare test_openssl_md5 test_pack25519
 
 
-test_simple: tests/test_simple.c
+test_openssl_md5: tests/test_openssl_md5.c
 	$(CC) $(CFLAGS) -static -o tests/$@ $< -lcrypto -lssl
 	$(CC) $(CFLAGS) $(LFLAGS) -o tests/$@.so $< -lcrypto -lssl
 
