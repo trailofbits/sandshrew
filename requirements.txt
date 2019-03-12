@@ -1,20 +1,22 @@
 capstone==4.0.1
-cffi==1.11.5
+clang==6.0.0.2
 cytoolz==0.9.0.1
 eth-hash==0.2.0
 eth-typing==2.0.0
 eth-utils==1.4.1
 future==0.17.1
-git+git://github.com/trailofbits/manticore@master
+jsonpickle==1.1
+-e git+git@github.com:ex0dus-0x/manticore.git@71b8d2ba7d85d78f90189cbed51d593c96951ee8#egg=manticore
 pkg-resources==0.0.0
 ply==3.11
 prettytable==0.7.2
-pycparser==2.19
 pyelftools==0.25
 pyevmasm==0.2.0
 pysha3==1.0.2
 PyYAML==3.13
 rlp==1.1.0
+-e git+git@github.com:trailofbits/sandshrew.git@f29e95f13b6a626fa7700cb3b35694aecde555fa#egg=sandshrew
+tabulate==0.8.3
 toolz==0.9.0
 unicorn==1.0.1
 z3-solver==4.8.0.0.post1

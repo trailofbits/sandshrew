@@ -6,7 +6,7 @@
  * 	TweeNaCL and Monocypher
  */
 
-#include <monocypher.c>
+#include <monocypher.h>
 #include <tweetnacl.h>
 
 #include <stdio.h>
@@ -14,18 +14,29 @@
 #include <string.h>
 
 
+uint8_t * SANDSHREW_crypto_sign_public_key(const uint8_t sk[32])
+{
+    uint8_t pk[32];
+    crypto_sign_public_key(pk, sk);
+    return pk;
+}
+
+
+uint8_t * SANDSHREW_crypto_scalarmult_curve25519_tweet_base(const uint8_t in[32])
+{
+    uint8_t res[32];
+    crypto_scalarmult_curve25519_tweet_base(res, in);
+    return res;
+}
+
+
 int main(int argc, char ** argv)
 {
 	/* instantiate buffers for storing results */
-	uint8_t r1[32], r2[32];
+	uint8_t * r1, * r2;
 
-    /* tweetnacl: vulnerable scalar multiplication */
-	crypto_scalarmult_curve25519_tweet_base(r1, (const uint8_t *) argv[1]);
-
-	/* monocypher */
-	ge A;
-	ge_scalarmult_base(&A, (uint8_t *) argv[1]);
-	ge_tobytes(r2, &A);
+    	r1 = SANDSHREW_crypto_scalarmult_curve25519_tweet_base((const uint8_t *) argv[1]);
+    	r2 = SANDSHREW_crypto_sign_public_key((const uint8_t *) argv[1]);
 
 	/*
 	printf("tweetnacl: ");
@@ -40,7 +51,7 @@ int main(int argc, char ** argv)
 	*/
 
 	/* compare implementations - use function models to aid */
-	if (memcmp(r1, r2, 32) != 0)
+	if (strcmp(r1, r2) != 0)
 		abort();
 
 	return 0;

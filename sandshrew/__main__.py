@@ -9,50 +9,23 @@ import argparse
 import os.path
 import logging
 
-from elftools.elf.elffile import ELFFile
-
 from manticore import issymbolic
 from manticore.core.smtlib import operators
-from manticore.core.plugin import Plugin
 from manticore.native import Manticore
 from manticore.native.models import strcmp
-from manticore.native.cpu import abstractcpu
 from manticore.utils.fallback_emulator import UnicornEmulator
 
-import sandshrew.parse as parse
+import sandshrew.utils as utils
 import sandshrew.consts as consts
-
-
-def binary_arch(binary):
-    """
-    helper method for determining binary architecture
-
-    :param binary: str to binary to introspect.
-    :rtype bool: True for x86_64, False otherwise
-    """
-
-    # initialize pyelftools
-    with open(binary, 'rb') as f:
-        elffile = ELFFile(f)
-
-    # returns true for x86_64
-    if elffile['e_machine'] == 'EM_X86_64':
-        return True
-    else:
-        return False
 
 
 def main():
     parser = argparse.ArgumentParser(prog="sandshrew")
-    required = parser.add_argument_group("required arguments")
 
-    # test gen and analysis
+    # required arg group for help display
+    required = parser.add_argument_group("required arguments")
     required.add_argument("-t", "--test", dest="test", required=True,
                         help="Target binary for sandshrew analysis")
-    required.add_argument("-s", "--symbol", dest="symbol", required=True,
-                        help="Target function symbol for equivalence analysis")
-    parser.add_argument("-x", "--exopts", dest="exopts", required=False,
-                        default='-Iinclude', help="Extra compilation flags for dynamic parse tree generation")
 
     # constraint configuration
     parser.add_argument("-c", "--constraint", dest="constraint", required=False,
@@ -77,24 +50,22 @@ def main():
         logging.basicConfig(level=logging.DEBUG)
 
     # check binary arch support for x86_64
-    if not binary_arch(args.test):
-        raise NotImplementedError("only supports x86_64 binary concretization")
+    if not utils.binary_arch(args.test):
+        raise NotImplementedError("sandshrew only supports x86_64 binary concretization")
 
     # initialize Manticore
     m = Manticore.linux(args.test, ['+' * consts.BUFFER_SIZE])
     m.verbosity(2)
 
     # initialize mcore context manager
-    m.context['sym'] = args.symbol
-    m.context['argv1'] = None
-    m.context['funcs'] = parse.generate_parse_tree(m.workspace, args.test + ".c", args.symbol, args.exopts)
+    m.context['syms'] = utils.binary_symbols(args.test)
     m.context['exec_flag'] = False
+    m.context['argv1'] = None
 
-    logging.debug(f"Generated callgraph for {m.context['sym']}: {m.context['funcs']}")
+    logging.debug(f"Functions for concretization: {m.context['syms']}")
 
     # add record trace hook throughout execution
     m.context['trace'] = []
-
 
     # initialize state by constraining symbolic argv
     @m.init
@@ -107,17 +78,20 @@ def main():
         if argv1 is None:
             raise RuntimeException("ARGV was not provided and/or made symbolic")
 
+        # apply constraint based on user input
         for i in range(consts.BUFFER_SIZE):
 
-            # apply constraint set based on user input
             if args.constraint == "alpha":
-                raise NotImplementedError("alpha constraint not yet implemented")
+                initial_state.constrain(operators.OR(
+                        operators.AND(ord('A') <= argv1[i], argv1[i] <= ord('Z')),
+                        operators.AND(ord('a') <= argv1[i], argv1[i] <= ord('z'))
+                ))
 
             elif args.constraint == "num":
                 initial_state.constrain(operators.AND(ord('0') <= argv1[i], argv1[i] <= ord('9')))
 
             elif args.constraint == "alphanum":
-                raise NotImplementedError("alpha constraint not yet implemented")
+                raise NotImplementedError("alphanum constraint set not yet implemented")
 
             # default case: ascii
             else:
@@ -139,28 +113,29 @@ def main():
             context['trace'] += [pc]
 
 
-    # at target symbol, attach a hook that determines whether
-    # Unicorn concretization is necessary
-    @m.hook(m.resolve(m.context['sym']))
-    def concrete_checker(state):
-        """ checker hook that concretizes symbolic input """
-        cpu = state.cpu
+    for sym in m.context['syms']:
 
-        with m.locked_context() as context:
-            logging.debug(f"Entering target function {context['sym']}")
+        # we do some initialization and symbolic input checking
+        # at the wrapper call (SANDSHREW_*) and determine if further
+        # concretization is necessary
+        @m.hook(m.resolve("SANDSHREW_" + sym))
+        def concrete_checker(state):
+            """ checker hook that concretizes symbolic input """
+            cpu = state.cpu
 
-            # check if RDI, the input arg, is symbolic, and
-            # if so, set `exec_flag` before raising exception.
-            data = cpu.read_int(cpu.RDI)
-            if issymbolic(data):
-                logging.debug("Concretizing input arg RDI")
-                context['exec_flag'] = True
+            with m.locked_context() as context:
+                logging.debug(f"Entering target function SANDSHREW_{sym}")
+
+                # check if RDI, the input arg, is symbolic, and
+                # if so, set `exec_flag` before raising exception.
+                data = cpu.read_int(cpu.RDI)
+                if issymbolic(data):
+                    logging.debug("Symbolic input arg detected")
+                    context['exec_flag'] = True
 
 
-    # for each helper function within those target symbols, add concrete_hook
-    # which enables them to be executed concretely w/out the SE engine
-    for sym in m.context['funcs']:
-
+        # actual hook for perform concretization when necessary, utilizing Unicorn
+        # in order to execute single `call <sym>` instructions concretely
         @m.hook(m.resolve(sym))
         def concolic_hook(state):
             """ concretization hook """
@@ -181,38 +156,38 @@ def main():
 
                     # use the fallback emulator to concretely execute call
                     # instruction.
-                    logging.debug(f"Concolically executing function {sym}")
-                    cpu.decode_instruction(cpu.PC)
-                    emu = UnicornEmulator(cpu)
-                    emu.emulate(cpu.instruction)
+                    logging.debug(f"Concretely executing `call <{sym}>`")
+                    state.cpu.decode_instruction(state.cpu.PC)
+                    emu = UnicornEmulator(state.cpu)
+                    emu.emulate(state.cpu.instruction)
+
+                    logging.debug("Continuing with Manticore symbolic execution")
+
+                    # jump to instruction after `call` (just to make sure)
+                    logging.debug(f"Jumping to next instruction {hex(next_pc)}")
+                    state.cpu.PC = next_pc
 
                     # create new fresh unconstrained symbolic value
-                    logging.debug("Writing fresh unconstrained buffer to RAX")
+                    logging.debug("Writing fresh unconstrained buffer to return value")
                     return_buf = state.new_symbolic_buffer(consts.BUFFER_SIZE)
                     state.cpu.write_bytes(state.cpu.RAX, return_buf)
 
-                    # jump to instruction after `call` (just to make sure)
-                    state.cpu.PC = next_pc
 
-                
                 # if flag is not set, we do not concolically execute. No symbolic input is
-                # present, so as a result, there is no need to collect path constraints.
+                # present, so no path constraints will be collected
                 else:
                     logging.debug("No symbolic input present, so skipping concolic testing.")
 
 
-
-    # FIXME(alan): strcmp hooks incorrectly, some implementations such __strcmp_avx2 optimization
+    # TODO(alan): resolve ifunc (different archs use different optimized implementations)
     # crypto comparisons should be done in strcmp. Since we are writing only test cases, we don't
     # need to rely on "constant-time comparison" implementations that may only lead to slower
     # SE runtimes.
-    '''
-    @m.hook(m.resolve('strcmp'))
-    def strcmp_model(state):
+    @m.hook(m.resolve('__strcmp_ssse3'))
+    def cmp_model(state):
         """ when encountering strcmp(), just execute the function model """
-        logging.debug("Invoking model for `strcmp()` call")
+        logging.debug("Invoking model for comparsion call")
         state.invoke_model(strcmp)
-    '''
 
 
     # we finally attach a hook on the `abort` call, which must be called in the program
@@ -220,26 +195,21 @@ def main():
     # solve for the argv symbolic buffer
     @m.hook(m.resolve('abort'))
     def fail_state(state):
-        """ the program must make a call to abort() in
-        the edge case path. This way we can hook onto it
+        """ the program must make a call to abort() in the edge case path. This way we can hook onto it
         with Manticore and solve for the input """
 
         logging.debug("Entering edge case path")
 
         # solve for the symbolic argv input
         with m.locked_context() as context:
-            context['solution'] = state.solve_one(context['argv1'], consts.BUFFER_SIZE)
-
+            solution = state.solve_one(context['argv1'], consts.BUFFER_SIZE)
+            print(f"\nEDGE CASE FOUND: {solution}")
         m.terminate()
 
 
     # run manticore
     m.run()
-
-    # output results
     print(f"Total instructions: {len(m.context['trace'])}\nLast instruction: {hex(m.context['trace'][-1])}")
-    if m.context['solution'] is not None:
-        print(f"\nEDGE CASE FOUND: {m.context['solution']}")
     return 0
 
 

@@ -22,6 +22,4 @@ To hack and develop on sandshrew, it is recommended to utilize a Python `virtual
 
 ## Example Test cases
 
-1. `test_simple`
-
 ## License
