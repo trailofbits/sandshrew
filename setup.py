@@ -10,8 +10,6 @@ setup(
         ],
     },
     install_requires=[
-        'cffi',
-        'pycparser',
         'pyelftools',
         'manticore'
     ],

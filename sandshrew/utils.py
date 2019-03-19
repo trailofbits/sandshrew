@@ -4,12 +4,10 @@ utils.py
     Various helper methods for concolic execution.
 
 """
-import sandshrew.parse as parse
-import sandshrew.consts as consts
-
 from elftools.elf.elffile import ELFFile
 from elftools.elf.sections import SymbolTableSection
 
+import sandshrew.consts as consts
 
 def binary_arch(binary):
     """

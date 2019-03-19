@@ -5,6 +5,8 @@ sandshrew.py
     Unconstrained concolic execution tool for cryptographic verification
 
 """
+import rand
+import string
 import argparse
 import os.path
 import logging
@@ -130,7 +132,7 @@ def main():
                 # if so, set `exec_flag` before raising exception.
                 data = cpu.read_int(cpu.RDI)
                 if issymbolic(data):
-                    logging.debug("Symbolic input arg detected")
+                    logging.debug(f"Symbolic input arg detected")
                     context['exec_flag'] = True
 
 
@@ -169,8 +171,8 @@ def main():
 
                     # create new fresh unconstrained symbolic value
                     logging.debug("Writing fresh unconstrained buffer to return value")
-                    return_buf = state.new_symbolic_buffer(consts.BUFFER_SIZE)
-                    state.cpu.write_bytes(state.cpu.RAX, return_buf)
+                    context['unconstrained'] = state.new_symbolic_buffer(consts.BUFFER_SIZE)
+                    state.cpu.write_bytes(state.cpu.RAX, context['unconstrained'])
 
 
                 # if flag is not set, we do not concolically execute. No symbolic input is
@@ -202,8 +204,14 @@ def main():
 
         # solve for the symbolic argv input
         with m.locked_context() as context:
-            solution = state.solve_one(context['argv1'], consts.BUFFER_SIZE)
+            solution = state.solve_one(context['unconstrained'], consts.BUFFER_SIZE)
             print(f"\nEDGE CASE FOUND: {solution}")
+
+            # write solution to individual test case to workspace
+            rand_str = lambda n: ''.join([random.choice(string.ascii_lowercase) for i in xrange(n)])
+            with open(m.workspace + '/' + 'sandshrew_' + rand_str, 'wb') as fd:
+                fd.write(solution)
+
         m.terminate()
 
 
