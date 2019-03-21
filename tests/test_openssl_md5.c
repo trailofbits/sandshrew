@@ -17,19 +17,20 @@
 
 /* create a SANDSHREW_* wrapper over OpenSSL's MD5 for concretization */
 unsigned char *
-SANDSHREW_MD5(char * input, size_t len, unsigned char * result)
+SANDSHREW_MD5(char * input, unsigned char * output)
 {
-	return MD5(input, len, result);
+	return MD5(input, 32, output);
 }
 
 
 int
 main(int argc, char *argv[])
 {
-	unsigned char * orig_result, * user_result;
-
-	orig_result = SANDSHREW_MD5("s0me_1nput_123", 32, orig_result);
-	user_result = SANDSHREW_MD5(argv[1], 32, user_result);
+	unsigned char * orig_result;
+	unsigned char * user_result;
+	
+	orig_result = SANDSHREW_MD5("s0me_1nput_123", orig_result);
+	user_result = SANDSHREW_MD5(argv[1], user_result);
 
 	/* if equal, we generated a hash collision! */
 	if (__strcmp_ssse3(orig_result, user_result) == 0)

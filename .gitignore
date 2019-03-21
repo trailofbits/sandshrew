@@ -5,11 +5,13 @@ include/
 __pycache__/
 *.egg-info/
 
-tests/_test.c
-tests/test_openssl_md5
-tests/test_pack25519
-
 *.swp
 *.so
 *.out
 *.gdb_history
+
+tests/test_openssl_md5
+tests/test_openssl_bnsqr
+tests/test_tweetnacl_scalarmult
+
+

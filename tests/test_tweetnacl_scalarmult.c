@@ -1,13 +1,16 @@
 /*
- * test_pack25519.c
+ * test_tweetnacl_scalarmult.c
  *
- * 	Equivalence test for correctness between
- * 	ECDLP implementations in 'tiny crypto', including
- * 	TweeNaCL and Monocypher
+ * 	Tests:
+ * 		TweetNacl Scalar multiplication
+ *
+ * 	Description:
+ * 		Equivalence test for correctness between
+ * 		ECDLP implementations in versions of TweetNacl
  */
 
-#include <monocypher.h>
-#include <tweetnacl.h>
+#include <tweetnacl_vuln.h>
+#include <tweetnacl_cur.h>
 
 #include <stdio.h>
 #include <stdlib.h>

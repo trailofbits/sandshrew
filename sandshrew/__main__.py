@@ -5,7 +5,7 @@ sandshrew.py
     Unconstrained concolic execution tool for cryptographic verification
 
 """
-import rand
+import random
 import string
 import argparse
 import os.path
@@ -31,15 +31,20 @@ def main():
 
     # constraint configuration
     parser.add_argument("-c", "--constraint", dest="constraint", required=False,
-                        default='ascii', help="Constraint to apply to symbolic input. \
+                        default="ascii", help="Constraint to apply to symbolic input. \
                         Includes ascii (default), alpha, num, or alphanum")
 
     # debugging options
-    parser.add_argument("-d", "--debug", dest="debug", action='store_true', required=False,
-                        help="Turns on debugging output for sandshrew")
-    parser.add_argument("--trace", dest='trace', action='store_true', required=False,
-                        help="Set to execute instruction recording")
+    parser.add_argument("--debug", dest="debug", action="store_true", required=False,
+                        help="If set, turns on debugging output for sandshrew")
+    parser.add_argument("--trace", dest="trace", action="store_true", required=False,
+                        help="If set, trace instruction recording will be outputted to logger")
+    parser.add_argument("--no-concolic", dest="no_concolic", action="store_true", required=False,
+                        help="If set, no concretization will be performed")
 
+    # other configuration settings
+    parser.add_argument("--cmpsym", dest="cmp_sym", default="__strcmp_ssse3", required=False,
+                        help="Overrides comparison function used to test for equivalence (default is strcmp)")
 
     # parse or print help
     args = parser.parse_args()
@@ -145,7 +150,7 @@ def main():
 
             with m.locked_context() as context:
 
-                if context['exec_flag'] == True:
+                if context['exec_flag'] and not args.no_concolic:
 
                     # store `call sym` instruction and the one after that
                     # by backtracking over trace counter
@@ -171,8 +176,8 @@ def main():
 
                     # create new fresh unconstrained symbolic value
                     logging.debug("Writing fresh unconstrained buffer to return value")
-                    context['unconstrained'] = state.new_symbolic_buffer(consts.BUFFER_SIZE)
-                    state.cpu.write_bytes(state.cpu.RAX, context['unconstrained'])
+                    return_buf = state.new_symbolic_buffer(consts.BUFFER_SIZE)
+                    state.cpu.write_bytes(state.cpu.RAX, return_buf)
 
 
                 # if flag is not set, we do not concolically execute. No symbolic input is
@@ -185,7 +190,7 @@ def main():
     # crypto comparisons should be done in strcmp. Since we are writing only test cases, we don't
     # need to rely on "constant-time comparison" implementations that may only lead to slower
     # SE runtimes.
-    @m.hook(m.resolve('__strcmp_ssse3'))
+    @m.hook(args.cmp_sym)
     def cmp_model(state):
         """ when encountering strcmp(), just execute the function model """
         logging.debug("Invoking model for comparsion call")
@@ -204,12 +209,12 @@ def main():
 
         # solve for the symbolic argv input
         with m.locked_context() as context:
-            solution = state.solve_one(context['unconstrained'], consts.BUFFER_SIZE)
+            solution = state.solve_one(context['argv1'], consts.BUFFER_SIZE)
             print(f"\nEDGE CASE FOUND: {solution}")
 
             # write solution to individual test case to workspace
-            rand_str = lambda n: ''.join([random.choice(string.ascii_lowercase) for i in xrange(n)])
-            with open(m.workspace + '/' + 'sandshrew_' + rand_str, 'wb') as fd:
+            rand_str = lambda n: ''.join([random.choice(string.ascii_lowercase) for i in range(n)])
+            with open(m.workspace + '/' + 'sandshrew_' + rand_str(4), 'wb') as fd:
                 fd.write(solution)
 
         m.terminate()
