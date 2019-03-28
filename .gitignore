@@ -1,8 +1,8 @@
 env/
 utils/
 mcore_*
-include/
 __pycache__/
+examples/include/
 *.egg-info/
 
 *.swp
@@ -10,8 +10,7 @@ __pycache__/
 *.out
 *.gdb_history
 
-tests/test_openssl_md5
-tests/test_openssl_bnsqr
-tests/test_tweetnacl_scalarmult
-
-
+examples/test_openssl_md5
+examples/test_openssl_bnsqr
+examples/test_tweetnacl_scalarmult
+examples/test_monocypher_eddsa

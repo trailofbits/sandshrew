@@ -2,7 +2,7 @@
 
 sandshrew is a prototype concolic unit testing tool for cryptographic verification. It harnesses the [Manticore](https://github.com/trailofbits/manticore) API in order to perform unconstrained concolic execution on C cryptographic primitives.
 
-Classical symbolic execution is generally not feasible when analyzing crypto, due to the presence of complex symbolic expressions. sandshrew fixes this problem and ensures semantic correctness by concretizing (or, "emulating") the execution of specified cryptographic primitives, avoiding complex SMT queries and creating a speedup in the analysis.
+Classical symbolic execution is generally not feasible when analyzing crypto, due to the presence of complex symbolic expressions. sandshrew fixes this problem and ensures functional correctness by concretizing (or, "emulating") the execution of specified cryptographic primitives, avoiding complex SMT queries and creating a speedup in the analysis.
 
 ## Features
 
@@ -19,6 +19,16 @@ $ python setup.py install
 ```
 
 To hack and develop on sandshrew, it is recommended to utilize a Python `virtualenv`.
+
+## Quickstart
+
+The simplest example is the hash collision example in `test_openssl_md5.c`:
+
+```
+$ cd examples/
+$ make all && cd ..
+$ sandshrew -t examples/test_openssl_md5 --debug
+```
 
 ## More Help
 

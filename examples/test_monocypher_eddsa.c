@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "monocypher.h"
+#include "monocypher.c"
 
 int
 main(int argc, char *argv[])
@@ -22,6 +22,5 @@ main(int argc, char *argv[])
 	uint8_t zero_key[32] = {0};
 		
 	crypto_sign_public_key(public_key, (const uint8_t *) argv[1]);
-
 	return 0;
 }
