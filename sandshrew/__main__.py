@@ -31,8 +31,7 @@ def main():
 
     # constraint configuration
     parser.add_argument("-c", "--constraint", dest="constraint", required=False,
-                        default="ascii", help="Constraint to apply to symbolic input. \
-                        Includes ascii (default), alpha, num, or alphanum")
+                        help="Constraint to apply to symbolic input. Includes ascii, alpha, num, or alphanum")
 
     # debugging options
     parser.add_argument("--debug", dest="debug", action="store_true", required=False,
@@ -85,25 +84,6 @@ def main():
         if argv1 is None:
             raise RuntimeException("ARGV was not provided and/or made symbolic")
 
-        # apply constraint based on user input
-        for i in range(consts.BUFFER_SIZE):
-
-            if args.constraint == "alpha":
-                initial_state.constrain(operators.OR(
-                        operators.AND(ord('A') <= argv1[i], argv1[i] <= ord('Z')),
-                        operators.AND(ord('a') <= argv1[i], argv1[i] <= ord('z'))
-                ))
-
-            elif args.constraint == "num":
-                initial_state.constrain(operators.AND(ord('0') <= argv1[i], argv1[i] <= ord('9')))
-
-            elif args.constraint == "alphanum":
-                raise NotImplementedError("alphanum constraint set not yet implemented")
-
-            # default case: ascii
-            else:
-                initial_state.constrain(operators.AND(ord(' ') <= argv1[i], argv1[i] <= ord('}')))
-
         # store argv1 in global state
         logging.debug("Applied constraint and storing argv in context")
         with m.locked_context() as context:
@@ -122,80 +102,97 @@ def main():
 
     for sym in m.context['syms']:
 
-        # we do some initialization and symbolic input checking
-        # at the wrapper call (SANDSHREW_*) and determine if further
-        # concretization is necessary
         @m.hook(m.resolve("SANDSHREW_" + sym))
         def concrete_checker(state):
-            """ checker hook that concretizes symbolic input """
+            """
+            initial checker hook for SANDSHREW_sym that checks for the presence of symbolic input.
+            If so, an unconstrained hook is attached to the memory location to restore symbolic state after concretization
+            """
             cpu = state.cpu
 
             with m.locked_context() as context:
-                logging.debug(f"Entering target function SANDSHREW_{sym}")
+                logging.debug(f"Entering target function SANDSHREW_{sym} at {hex(state.cpu.PC)}")
 
-                # check if RDI, the input arg, is symbolic, and
-                # if so, set `exec_flag` before raising exception.
-                data = cpu.read_int(cpu.RDI)
+                # check if RSI, the assumed input arg, is symbolic
+                data = cpu.read_int(cpu.RSI)
                 if issymbolic(data):
-                    logging.debug(f"Symbolic input arg detected")
-                    context['exec_flag'] = True
+                    logging.debug(f"Symbolic input parameter to function {sym}() detected")
+
+                    # store instruction after `call SANDSHREW_*`
+                    return_pc = context['trace'][-1] + 5
+
+                    # attach a hook to the return_pc, as this is where we will perform concolic execution
+                    @m.hook(return_pc)
+                    def unconstrain_hook(state):
+                        """
+                        unconstrain_hook writes unconstrained symbolic data to the memory location of the output.
+                        """
+                        with m.locked_context() as context:
+
+                            # output param is RDI, symbolicate RAX
+                            context['return_addr'] = cpu.RAX
+                            logging.debug(f"Writing unconstrained buffer to output memory location")
+
+                            # initialize unconstrained symbolic input
+                            return_buf = state.new_symbolic_buffer(consts.BUFFER_SIZE)
+
+                            # apply charset constraints based on user input
+                            for i in range(consts.BUFFER_SIZE):
+
+                                if args.constraint == "alpha":
+                                    state.constrain(operators.OR(
+                                            operators.AND(ord('A') <= return_buf[i], return_buf[i] <= ord('Z')),
+                                            operators.AND(ord('a') <= return_buf[i], return_buf[i] <= ord('z'))
+                                    ))
+
+                                elif args.constraint == "num":
+                                    state.constrain(operators.AND(ord('0') <= return_buf[i], return_buf[i] <= ord('9')))
+
+                                elif args.constraint == "alphanum":
+                                    raise NotImplementedError("alphanum constraint set not yet implemented")
+
+                                elif args.constraint == "ascii":
+                                    state.constrain(operators.AND(ord(' ') <= return_buf[i], return_buf[i] <= ord('}')))
+
+                            # write to address
+                            state.cpu.write_bytes(context['return_addr'], return_buf)
 
 
-        # actual hook for perform concretization when necessary, utilizing Unicorn
-        # in order to execute single `call <sym>` instructions concretely
         @m.hook(m.resolve(sym))
         def concolic_hook(state):
-            """ concretization hook """
+            """
+            hook used in order to concretize the execution of a `call <sym>` instruction
+            """
             cpu = state.cpu
 
             with m.locked_context() as context:
 
-                if context['exec_flag'] and not args.no_concolic:
+                # store `call sym` instruction and ret val instruction
+                call_pc = context['trace'][-1]
 
-                    # store `call sym` instruction and the one after that
-                    # by backtracking over trace counter
-                    call_pc = context['trace'][-1]
-                    next_pc = context['trace'][-1] + 5
+                # we are currently in the function prologue of `sym`. Let's go back to `call sym`.
+                state.cpu.PC = call_pc
 
-                    # we are currently in the function prologue of `sym`.
-                    # let's go back to `call sym`.
-                    state.cpu.PC = call_pc
+                # use the fallback emulator to concretely execute call instruction.
+                logging.debug(f"Concretely executing `call <{sym}>` at {hex(call_pc)}")
+                state.cpu.decode_instruction(state.cpu.PC)
+                emu = UnicornEmulator(state.cpu)
+                emu.emulate(state.cpu.instruction)
 
-                    # use the fallback emulator to concretely execute call
-                    # instruction.
-                    logging.debug(f"Concretely executing `call <{sym}>`")
-                    state.cpu.decode_instruction(state.cpu.PC)
-                    emu = UnicornEmulator(state.cpu)
-                    emu.emulate(state.cpu.instruction)
+                logging.debug("Continuing with Manticore symbolic execution")
 
-                    logging.debug("Continuing with Manticore symbolic execution")
-
-                    # jump to instruction after `call` (just to make sure)
-                    logging.debug(f"Jumping to next instruction {hex(next_pc)}")
-                    state.cpu.PC = next_pc
-
-                    # create new fresh unconstrained symbolic value
-                    logging.debug("Writing fresh unconstrained buffer to return value")
-                    return_buf = state.new_symbolic_buffer(consts.BUFFER_SIZE)
-                    state.cpu.write_bytes(state.cpu.RAX, return_buf)
-
-
-                # if flag is not set, we do not concolically execute. No symbolic input is
-                # present, so no path constraints will be collected
-                else:
-                    logging.debug("No symbolic input present, so skipping concolic testing.")
-
-
+    '''
     # TODO(alan): resolve ifunc (different archs use different optimized implementations)
-    # crypto comparisons should be done in strcmp. Since we are writing only test cases, we don't
-    # need to rely on "constant-time comparison" implementations that may only lead to slower
-    # SE runtimes.
-    @m.hook(args.cmp_sym)
+    @m.hook(m.resolve(args.cmp_sym))
     def cmp_model(state):
-        """ when encountering strcmp(), just execute the function model """
+        """
+        used in order to invoke Manticore function model for strcmp and/or other comparison operation
+        calls. While a developer can write a test case using a crypto library's built in
+        constant-time comparison operation, it is preferable to use strcmp().
+        """
         logging.debug("Invoking model for comparsion call")
         state.invoke_model(strcmp)
-
+    '''
 
     # we finally attach a hook on the `abort` call, which must be called in the program
     # to abort from a fail/edge case path (i.e comparison b/w implementations failed), and
@@ -210,12 +207,12 @@ def main():
         # solve for the symbolic argv input
         with m.locked_context() as context:
             solution = state.solve_one(context['argv1'], consts.BUFFER_SIZE)
-            print(f"\nEDGE CASE FOUND: {solution}")
+            print(f"Solution found: {solution}")
 
             # write solution to individual test case to workspace
             rand_str = lambda n: ''.join([random.choice(string.ascii_lowercase) for i in range(n)])
-            with open(m.workspace + '/' + 'sandshrew_' + rand_str(4), 'wb') as fd:
-                fd.write(solution)
+            with open(m.workspace + '/' + 'sandshrew_' + rand_str(4), 'w') as fd:
+                fd.write(str(solution))
 
         m.terminate()
 
