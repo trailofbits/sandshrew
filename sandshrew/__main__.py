@@ -73,11 +73,11 @@ def main():
     # add record trace hook throughout execution
     m.context['trace'] = []
 
-    # initialize state by constraining symbolic argv
+    # initialize state by checking and storing symbolic argv
     @m.init
     def init(initial_state):
 
-        logging.debug(f"Creating symbolic argument using '{args.constraint}' constraint")
+        logging.debug(f"Checking for symbolic ARGV")
 
         # determine argv[1] from state.input_symbols by label name
         argv1 = next(sym for sym in initial_state.input_symbols if sym.name == 'ARGV1')
@@ -85,7 +85,6 @@ def main():
             raise RuntimeException("ARGV was not provided and/or made symbolic")
 
         # store argv1 in global state
-        logging.debug("Applied constraint and storing argv in context")
         with m.locked_context() as context:
             context['argv1'] = argv1
 
@@ -194,19 +193,18 @@ def main():
         state.invoke_model(strcmp)
     '''
 
-    # we finally attach a hook on the `abort` call, which must be called in the program
-    # to abort from a fail/edge case path (i.e comparison b/w implementations failed), and
-    # solve for the argv symbolic buffer
     @m.hook(m.resolve('abort'))
     def fail_state(state):
-        """ the program must make a call to abort() in the edge case path. This way we can hook onto it
-        with Manticore and solve for the input """
+        """
+        hook attached at fail state signified by abort call, which indicates that an edge case
+        input is provided and the abort() call is made
+        """
 
         logging.debug("Entering edge case path")
 
         # solve for the symbolic argv input
         with m.locked_context() as context:
-            solution = state.solve_one(context['argv1'], consts.BUFFER_SIZE)
+            solution = state.solve_one(context['return_addr'], consts.BUFFER_SIZE)
             print(f"Solution found: {solution}")
 
             # write solution to individual test case to workspace
