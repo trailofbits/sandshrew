@@ -13,7 +13,7 @@ prettytable==0.7.2
 pyelftools==0.25
 pyevmasm==0.2.0
 pysha3==1.0.2
-PyYAML==3.13
+PyYAML==5.1
 rlp==1.1.0
 -e git+git@github.com:trailofbits/sandshrew.git@f29e95f13b6a626fa7700cb3b35694aecde555fa#egg=sandshrew
 tabulate==0.8.3
